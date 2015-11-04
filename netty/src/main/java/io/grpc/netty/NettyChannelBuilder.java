@@ -39,6 +39,7 @@ import com.google.common.base.Preconditions;
 
 import io.grpc.Attributes;
 import io.grpc.ExperimentalApi;
+import io.grpc.Internal;
 import io.grpc.NameResolver;
 import io.grpc.internal.AbstractManagedChannelImplBuilder;
 import io.grpc.internal.AbstractReferenceCounted;
@@ -65,12 +66,14 @@ public class NettyChannelBuilder extends AbstractManagedChannelImplBuilder<Netty
   public static final int DEFAULT_FLOW_CONTROL_WINDOW = 1048576; // 1MiB
 
   private NegotiationType negotiationType = NegotiationType.TLS;
+  private ProtocolNegotiator protocolNegotiator;
   private Class<? extends Channel> channelType = NioSocketChannel.class;
   @Nullable
   private EventLoopGroup eventLoopGroup;
   private SslContext sslContext;
   private int flowControlWindow = DEFAULT_FLOW_CONTROL_WINDOW;
   private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
+  private int maxHeaderListSize = GrpcUtil.DEFAULT_MAX_HEADER_LIST_SIZE;
 
   /**
    * Creates a new builder with the given server address. This factory method is primarily intended
@@ -133,6 +136,19 @@ public class NettyChannelBuilder extends AbstractManagedChannelImplBuilder<Netty
   }
 
   /**
+   * Sets the {@link ProtocolNegotiator} to be used. If non-{@code null}, overrides the value
+   * specified in {@link #negotiationType(NegotiationType)} or {@link #usePlaintext(boolean)}.
+   *
+   * <p>Default: {@code null}.
+   */
+  @Internal
+  public final NettyChannelBuilder protocolNegotiator(
+          @Nullable ProtocolNegotiator protocolNegotiator) {
+    this.protocolNegotiator = protocolNegotiator;
+    return this;
+  }
+
+  /**
    * Provides an EventGroupLoop to be used by the netty transport.
    *
    * <p>It's an optional parameter. If the user has not provided an EventGroupLoop when the channel
@@ -160,18 +176,28 @@ public class NettyChannelBuilder extends AbstractManagedChannelImplBuilder<Netty
    * is {@link #DEFAULT_FLOW_CONTROL_WINDOW}).
    */
   public final NettyChannelBuilder flowControlWindow(int flowControlWindow) {
-    Preconditions.checkArgument(flowControlWindow > 0, "flowControlWindow must be positive");
+    checkArgument(flowControlWindow > 0, "flowControlWindow must be positive");
     this.flowControlWindow = flowControlWindow;
     return this;
   }
 
   /**
    * Sets the maximum message size allowed to be received on the channel. If not called,
-   * defaults to {@link io.grpc.internal.GrpcUtil#DEFAULT_MAX_MESSAGE_SIZE}.
+   * defaults to {@link GrpcUtil#DEFAULT_MAX_MESSAGE_SIZE}.
    */
   public final NettyChannelBuilder maxMessageSize(int maxMessageSize) {
     checkArgument(maxMessageSize >= 0, "maxMessageSize must be >= 0");
     this.maxMessageSize = maxMessageSize;
+    return this;
+  }
+
+  /**
+   * Sets the maximum size of header list allowed to be received on the channel. If not called,
+   * defaults to {@link GrpcUtil#DEFAULT_MAX_HEADER_LIST_SIZE}.
+   */
+  public final NettyChannelBuilder maxHeaderListSize(int maxHeaderListSize) {
+    checkArgument(maxHeaderListSize > 0, "maxHeaderListSize must be > 0");
+    this.maxHeaderListSize = maxHeaderListSize;
     return this;
   }
 
@@ -191,8 +217,8 @@ public class NettyChannelBuilder extends AbstractManagedChannelImplBuilder<Netty
 
   @Override
   protected ClientTransportFactory buildTransportFactory() {
-    return new NettyTransportFactory(channelType, negotiationType, sslContext,
-        eventLoopGroup, flowControlWindow, maxMessageSize);
+    return new NettyTransportFactory(channelType, negotiationType, protocolNegotiator, sslContext,
+        eventLoopGroup, flowControlWindow, maxMessageSize, maxHeaderListSize);
   }
 
   @Override
@@ -241,23 +267,29 @@ public class NettyChannelBuilder extends AbstractManagedChannelImplBuilder<Netty
           implements ClientTransportFactory {
     private final Class<? extends Channel> channelType;
     private final NegotiationType negotiationType;
+    private final ProtocolNegotiator protocolNegotiator;
     private final SslContext sslContext;
     private final EventLoopGroup group;
     private final boolean usingSharedGroup;
     private final int flowControlWindow;
     private final int maxMessageSize;
+    private final int maxHeaderListSize;
 
     private NettyTransportFactory(Class<? extends Channel> channelType,
                                   NegotiationType negotiationType,
+                                  ProtocolNegotiator protocolNegotiator,
                                   SslContext sslContext,
                                   EventLoopGroup group,
                                   int flowControlWindow,
-                                  int maxMessageSize) {
+                                  int maxMessageSize,
+                                  int maxHeaderListSize) {
       this.channelType = channelType;
       this.negotiationType = negotiationType;
+      this.protocolNegotiator = protocolNegotiator;
       this.sslContext = sslContext;
       this.flowControlWindow = flowControlWindow;
       this.maxMessageSize = maxMessageSize;
+      this.maxHeaderListSize = maxHeaderListSize;
       usingSharedGroup = group == null;
       if (usingSharedGroup) {
         // The group was unspecified, using the shared group.
@@ -269,10 +301,10 @@ public class NettyChannelBuilder extends AbstractManagedChannelImplBuilder<Netty
 
     @Override
     public ClientTransport newClientTransport(SocketAddress serverAddress, String authority) {
-      ProtocolNegotiator negotiator =
+      ProtocolNegotiator negotiator = protocolNegotiator != null ? protocolNegotiator :
           createProtocolNegotiator(authority, negotiationType, sslContext);
       return new NettyClientTransport(serverAddress, channelType, group, negotiator,
-          flowControlWindow, maxMessageSize, authority);
+          flowControlWindow, maxMessageSize, maxHeaderListSize, authority);
     }
 
     @Override

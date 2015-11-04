@@ -38,7 +38,9 @@ import com.google.common.base.Preconditions;
 
 import io.grpc.ExperimentalApi;
 import io.grpc.HandlerRegistry;
+import io.grpc.Internal;
 import io.grpc.internal.AbstractServerImplBuilder;
+import io.grpc.internal.GrpcUtil;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -65,9 +67,11 @@ public final class NettyServerBuilder extends AbstractServerImplBuilder<NettySer
   @Nullable
   private EventLoopGroup workerEventLoopGroup;
   private SslContext sslContext;
+  private ProtocolNegotiator protocolNegotiator;
   private int maxConcurrentCallsPerConnection = Integer.MAX_VALUE;
   private int flowControlWindow = DEFAULT_FLOW_CONTROL_WINDOW;
   private int maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE;
+  private int maxHeaderListSize = GrpcUtil.DEFAULT_MAX_HEADER_LIST_SIZE;
 
   /**
    * Creates a server builder that will bind to the given port.
@@ -178,11 +182,24 @@ public final class NettyServerBuilder extends AbstractServerImplBuilder<NettySer
   }
 
   /**
+   * Sets the {@link ProtocolNegotiator} to be used. If non-{@code null}, overrides the value
+   * specified in {@link #sslContext(SslContext)}.
+   *
+   * <p>Default: {@code null}.
+   */
+  @Internal
+  public final NettyServerBuilder protocolNegotiator(
+          @Nullable ProtocolNegotiator protocolNegotiator) {
+    this.protocolNegotiator = protocolNegotiator;
+    return this;
+  }
+
+  /**
    * The maximum number of concurrent calls permitted for each incoming connection. Defaults to no
    * limit.
    */
   public NettyServerBuilder maxConcurrentCallsPerConnection(int maxCalls) {
-    Preconditions.checkArgument(maxCalls > 0, "max must be positive: %s", maxCalls);
+    checkArgument(maxCalls > 0, "max must be positive: %s", maxCalls);
     this.maxConcurrentCallsPerConnection = maxCalls;
     return this;
   }
@@ -192,7 +209,7 @@ public final class NettyServerBuilder extends AbstractServerImplBuilder<NettySer
    * is {@link #DEFAULT_FLOW_CONTROL_WINDOW}).
    */
   public NettyServerBuilder flowControlWindow(int flowControlWindow) {
-    Preconditions.checkArgument(flowControlWindow > 0, "flowControlWindow must be positive");
+    checkArgument(flowControlWindow > 0, "flowControlWindow must be positive");
     this.flowControlWindow = flowControlWindow;
     return this;
   }
@@ -207,11 +224,26 @@ public final class NettyServerBuilder extends AbstractServerImplBuilder<NettySer
     return this;
   }
 
+  /**
+   * Sets the maximum size of header list allowed to be received on the server. If not called,
+   * defaults to {@link GrpcUtil#DEFAULT_MAX_HEADER_LIST_SIZE}.
+   */
+  public NettyServerBuilder maxHeaderListSize(int maxHeaderListSize) {
+    checkArgument(maxHeaderListSize > 0, "maxHeaderListSize must be > 0");
+    this.maxHeaderListSize = maxHeaderListSize;
+    return this;
+  }
+
   @Override
   protected NettyServer buildTransportServer() {
+    ProtocolNegotiator negotiator = protocolNegotiator;
+    if (negotiator == null) {
+      negotiator = sslContext != null ? ProtocolNegotiators.serverTls(sslContext) :
+              ProtocolNegotiators.serverPlaintext();
+    }
     return new NettyServer(address, channelType, bossEventLoopGroup,
-            workerEventLoopGroup, sslContext, maxConcurrentCallsPerConnection, flowControlWindow,
-            maxMessageSize);
+            workerEventLoopGroup, negotiator, maxConcurrentCallsPerConnection, flowControlWindow,
+            maxMessageSize, maxHeaderListSize);
   }
 
   @Override
